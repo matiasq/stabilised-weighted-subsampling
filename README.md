@@ -30,6 +30,13 @@ The notebook should be executed **cell by cell in order**, as later sections dep
 - The notebook uses a caching mechanism: results are saved to disk and reused if available on disk.
 - The code is intended for reproducibility, but can be adapted with care to related settings.
 
+## Notes
+
+- Some parts of the code are computationally intensive, particularly the full-data MCMC experiments (one run can take around 20 hours).
+- The notebook uses a caching mechanism: results are saved to disk and reused if available on disk.
+- The code is intended for reproducibility, but can be adapted with care to related settings.
+- Precomputed results for subsampling MCMC, full-data MCMC, and datasets required by the SG-MCMC and DC-BATS codes are included in the repository to allow immediate reproduction of results without rerunning `stabilised_weighted_data_subsampling.ipynb`. 
+
 ## Requirements
 
 The code relies on standard Python and R scientific computing libraries.
