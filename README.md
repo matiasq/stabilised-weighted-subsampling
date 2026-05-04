@@ -1,4 +1,8 @@
-# Stabilised weighted subsampling
+<p align="center">
+  <img src="tpd_weights_readme.png" width="600"/>
+</p>
+
+# Stabilised weighted data subsampling
 
 This repository contains code and datasets to reproduce the results in:
 
