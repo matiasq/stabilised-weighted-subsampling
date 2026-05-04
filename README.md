@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="tpd_weights_readme.png" width="600"/>
+  <img src="tpd_weights_readme.png" width="700"/>
 </p>
 
 # Stabilised weighted data subsampling
