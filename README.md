@@ -6,7 +6,7 @@
 
 This repository contains code and datasets to reproduce the results in:
 
-Quiroz, Bhaskaran, Wang and Goodwin (2026).  
+Quiroz, M. Bhaskaran, A., Wang, Z., and Goodwin, T. (2026).  
 *Stabilised weighted data subsampling for accelerated inference in models with recursive likelihoods.*
 
 ## Overview
@@ -33,9 +33,6 @@ The notebook should be executed **cell by cell in order**, as later sections dep
 - Some parts of the code are computationally intensive, particularly the full-data MCMC experiments.
 - The notebook uses a caching mechanism: results are saved to disk and reused if available on disk.
 - The code is intended for reproducibility, but can be adapted with care to related settings.
-
-## Notes
-
 - Some parts of the code are computationally intensive, particularly the full-data MCMC experiments (one run can take around 20 hours).
 - The notebook uses a caching mechanism: results are saved to disk and reused if available on disk.
 - The code is intended for reproducibility, but can be adapted with care to related settings.
