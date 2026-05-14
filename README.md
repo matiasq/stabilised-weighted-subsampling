@@ -6,8 +6,9 @@
 
 This repository contains code and datasets to reproduce the results in:
 
-Quiroz, M. Bhaskaran, A., Wang, Z., and Goodwin, T. (2026).  
-*Stabilised weighted data subsampling for accelerated inference in models with recursive likelihoods.*
+Quiroz, M., Bhaskaran, A., Wang, Z., and Goodwin, T. (2026).  
+*Stabilised weighted data subsampling for accelerated inference in models with recursive likelihoods.*  
+Available on [arXiv](https://arxiv.org/abs/2605.13397).
 
 ## Overview
 
