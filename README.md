@@ -17,6 +17,10 @@ The repository implements subsampling variational Bayes and subsampling Markov c
 ## Structure
 
 - `stabilised_weighted_data_subsampling.ipynb`: Main notebook used to reproduce the figures and tables in the paper.
+- `stabilised_weighted_data_subsampling_v3.ipynb`: Unexecuted Version-3 copy that preserves the original workflow and adds the regression-GARCH dimensional stress test after the existing DC-BATS comparison.
+- `run_regression_garch_stress_test.py`: Restart-safe production driver for the five $p=25$ ($d=29$) and five $p=50$ ($d=54$) regression-GARCH datasets.
+- `export_regression_garch_dcbats.py`: Verified canonical-data and Python-result export plus deterministic DC-BATS resource selection.
+- `run_regression_garch_dc_bats.R` and `regression_garch_student_t.stan`: Separate regression-GARCH Student-t DC-BATS implementation.
 - `sg_mcmc_runs.ipynb`: Notebook used to generate results for the SG-MCMC comparison.
 - `run_dc_bats_runs.R`: Script used to generate results for the divide-and-conquer comparison.
 - `garch11_normal.stan`: Stan model used in the DC-BATS implementation.

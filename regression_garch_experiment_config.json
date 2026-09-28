@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "description": "Pre-specified Version-3 regression-GARCH dimensional stress-test configuration.",
+  "data_generating_process": {
+    "T": 100000,
+    "simulation_burn_in": 1000,
+    "rho": 0.5,
+    "signal_variance": 1.0,
+    "omega": 0.07134079,
+    "alpha": 0.16151262,
+    "beta_garch": 0.78591371,
+    "nu": 8.0
+  },
+  "cases": {
+    "25": {
+      "total_dimension": 29,
+      "dataset_seeds": {
+        "001": 20260921,
+        "002": 20260923,
+        "003": 20260924,
+        "004": 20260925,
+        "005": 20260926
+      },
+      "canonical_dataset_001_sha256": "07a016de0093074e65d29f3a2a87fb5e9f4af0f38fe0f50ce10fa3e9fad295cd",
+      "proposal_covariance_multiplier": 0.2
+    },
+    "50": {
+      "total_dimension": 54,
+      "dataset_seeds": {
+        "001": 20260922,
+        "002": 20260927,
+        "003": 20260928,
+        "004": 20260929,
+        "005": 20260930
+      },
+      "canonical_dataset_001_sha256": "fa821d80909ca019ad41fdb3938f240df1b8e91e965bac1a05525c4186180b65",
+      "proposal_covariance_multiplier": 0.75
+    }
+  },
+  "mcmc": {
+    "iterations": 12000,
+    "burn_in": 2000,
+    "retained_draws": 10000,
+    "pilot_iterations": 300,
+    "pilot_slice_start": 20,
+    "pilot_slice_step": 10,
+    "R_max": 100,
+    "t_star": 1000,
+    "b": 0.0,
+    "m_min": 2
+  },
+  "seed_bases": {
+    "pilot": 20263000,
+    "full_data": 20264000,
+    "subsampling": 20265000
+  },
+  "dc_bats": {
+    "canonical_dataset_id": "001",
+    "standard_K": [10, 20],
+    "n_chains": 4,
+    "n_warmup": 5000,
+    "n_sampling": 5000,
+    "barycentre_draws": 10000,
+    "k_rule": "ordinary nearest-integer rounding of median R_CPU, implemented for positive values as floor(median_R_CPU + 0.5); T plays no role"
+  }
+}
