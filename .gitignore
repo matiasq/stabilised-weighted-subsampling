@@ -1,0 +1,6 @@
+# Generated regression-GARCH datasets and production checkpoints/results.
+data/regression_garch_*_dataset_*.npz
+regression_garch_outputs/
+
+# Notebook-generated numerical caches, logs, figures, and external-method result copies.
+/results/
