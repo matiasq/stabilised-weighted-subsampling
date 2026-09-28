@@ -27,7 +27,9 @@ from pathlib import Path
 
 import matplotlib
 
-matplotlib.use("Agg")
+# Preserve Jupyter's interactive backend when this API is imported by the notebook.
+if "ipykernel" not in sys.modules:
+    matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 from autograd import grad, hessian
@@ -253,7 +255,15 @@ def ensure_dataset(p_reg, dataset_id, config):
     seed = int(case["dataset_seeds"][dataset_id])
     path = dataset_path(p_reg, dataset_id)
     if not path.exists():
+        progress(
+            f"p={p_reg} (d={p_reg + 4}) dataset {dataset_id}: "
+            f"creating missing dataset with fixed seed {seed}"
+        )
         simulate_dataset_once(path, p_reg, dataset_id, seed, config)
+    else:
+        progress(
+            f"p={p_reg} (d={p_reg + 4}) dataset {dataset_id}: verifying existing dataset"
+        )
     checksum = sha256_file(path)
     if dataset_id == "001" and checksum != case["canonical_dataset_001_sha256"]:
         raise RuntimeError(f"Canonical p={p_reg} dataset 001 SHA-256 mismatch.")
@@ -577,7 +587,12 @@ def run_or_load_full(path, model, MAP, covariance, iterations, burn_in, seed, ch
         and int(cached["iterations"]) == iterations
         and int(cached["burn_in"]) == burn_in
     ):
+        progress(f"p={model['p_reg']} {dataset_label}: loading cached {Path(path).stem}")
         return cached
+    progress(
+        f"p={model['p_reg']} {dataset_label}: running {Path(path).stem} "
+        f"({iterations} iterations, burn-in {burn_in})"
+    )
     np.random.seed(seed)
     random.seed(seed)
     cpu_start = time.process_time()
@@ -610,6 +625,7 @@ def construct_or_load_taylor(model, MAP, checksum, out, config):
             and np.array_equal(np.asarray(metadata.get("MAP")), np.asarray(MAP))
             and tuple(array.shape for array in arrays) == expected_shapes
         ):
+            progress(f"p={model['p_reg']}: loading cached Taylor control variates")
             return install_taylor(model, MAP, arrays, config), metadata
         del arrays
     progress(f"constructing Taylor control variates at p={model['p_reg']}")
@@ -673,7 +689,9 @@ def run_or_load_tuning(model, MAP, Taylor, pilot, checksum, out, config):
         and int(cached["t_star"]) == 1000
         and float(cached["b"]) == 0.0
     ):
+        progress(f"p={model['p_reg']}: loading cached b=0, R_max=100 tuning")
         return cached
+    progress(f"p={model['p_reg']}: running calibrated b=0, R_max=100 tuning")
     mcmc = config["mcmc"]
     densities, gradients, Hessians, _ = Taylor
     pilot_slice = slice(mcmc["pilot_slice_start"], mcmc["pilot_iterations"] + 1, mcmc["pilot_slice_step"])
@@ -721,7 +739,12 @@ def run_or_load_subsampling(path, model, MAP, covariance, tuning, iterations, bu
         and int(cached["iterations"]) == iterations
         and int(cached["burn_in"]) == burn_in
     ):
+        progress(f"p={model['p_reg']} {dataset_label}: loading cached b=0 subsampling chain")
         return cached
+    progress(
+        f"p={model['p_reg']} {dataset_label}: running b=0 subsampling chain "
+        f"({iterations} iterations, burn-in {burn_in})"
+    )
     np.random.seed(seed)
     random.seed(seed)
     cpu_start = time.process_time()
@@ -809,7 +832,9 @@ def summarise_dataset(p_reg, dataset_id, seed, checksum, full, subsampling, tuni
             and cached_summary.get("subsampling_chain_proposal_sha256") == subsampling_proposal_hash
             and cached_summary.get("subsampling_tuning_signature") == tuning_signature
         ):
+            progress(f"p={p_reg} dataset {dataset_id}: loading cached posterior summary")
             return cached_summary
+    progress(f"p={p_reg} dataset {dataset_id}: creating posterior summary and diagnostics")
     rows = comparison_rows(full["retained_theta"], subsampling["retained_theta"], p_reg)
     save_comparison(rows, out / "posterior_comparison.csv")
     if dataset_id == "001":
@@ -856,13 +881,19 @@ def summarise_dataset(p_reg, dataset_id, seed, checksum, full, subsampling, tuni
 
 
 def run_dataset(p_reg, dataset_id, config):
+    progress(f"starting p={p_reg} (d={p_reg + 4}), dataset {dataset_id}")
     dataset, checksum, manifest = ensure_dataset(p_reg, dataset_id, config)
     out = output_directory(p_reg, dataset_id)
     out.mkdir(parents=True, exist_ok=True)
     model = setup_model(dataset, p_reg, config)
+    progress(f"p={p_reg} dataset {dataset_id}: model configured")
     map_stage = obtain_map(model, dataset, checksum, p_reg, dataset_id, out)
     multiplier = float(config["cases"][str(p_reg)]["proposal_covariance_multiplier"])
     covariance, proposal_jitter = proposal_covariance(map_stage, p_reg, multiplier)
+    progress(
+        f"p={p_reg} dataset {dataset_id}: proposal constructed "
+        f"(multiplier={multiplier:.2f}, Cholesky jitter={proposal_jitter:.3e})"
+    )
     if proposal_jitter != 0.0:
         warnings.warn(f"Proposal required numerical jitter {proposal_jitter:.3e}.")
     mcmc = config["mcmc"]
@@ -890,6 +921,7 @@ def run_dataset(p_reg, dataset_id, config):
     )
     del Taylor, pilot, full, subsampling, model, dataset
     gc.collect()
+    progress(f"completed p={p_reg} (d={p_reg + 4}), dataset {dataset_id}")
     return summary
 
 
@@ -909,12 +941,17 @@ def aggregate_dimension(p_reg, config):
         "interpretation": "Five computational robustness/timing datasets; these are not coverage replicates.",
     }
     atomic_json(OUTPUT_ROOT / f"p{p_reg}" / "five_dataset_summary.json", aggregate)
+    progress(
+        f"p={p_reg} (d={p_reg + 4}): saved five-dataset CPU summary; "
+        f"median R_CPU={aggregate['median_R_CPU']:.6g}, range={aggregate['range_R_CPU']}"
+    )
     return aggregate
 
 
 def prepare_datasets(config, p_values=(25, 50)):
     for p_reg in p_values:
         for dataset_id in sorted(config["cases"][str(p_reg)]["dataset_seeds"]):
+            progress(f"dataset preparation: p={p_reg} (d={p_reg + 4}), dataset {dataset_id}")
             dataset, _, _ = ensure_dataset(p_reg, dataset_id, config)
             del dataset
             gc.collect()

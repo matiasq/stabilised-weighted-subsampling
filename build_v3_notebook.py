@@ -44,121 +44,141 @@ The full-data and stabilised weighted subsampling analyses use the same dataset,
 The configuration below was fixed before production results were observed. The two dataset-001 archives are immutable canonical inputs and are verified by SHA-256 before use. Datasets 002--005 are generated only when absent, are never silently overwritten, and use the same validated simulation/serialization implementation as dataset 001.
 """),
     code("""import gc
-import hashlib
 import json
-import subprocess
-from IPython.display import Image
+from pathlib import Path
 
-REGRESSION_GARCH_CONFIG_PATH = Path("regression_garch_experiment_config.json")
-with REGRESSION_GARCH_CONFIG_PATH.open(encoding="utf-8") as source:
-    regression_garch_config = json.load(source)
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from IPython.display import Image, Markdown, display
+from scipy import stats as sps
 
-# Fixed, pre-specified dataset seeds (visible here by design).
+import run_regression_garch_stress_test as regression_garch_production
+import export_regression_garch_dcbats as regression_garch_dcbats_export
+
+regression_garch_config = regression_garch_production.load_config()
+regression_garch_production.require_writable_output_root()
+
+REGRESSION_GARCH_DATASET_IDS = ("001", "002", "003", "004", "005")
 REGRESSION_GARCH_DATASET_SEEDS = {
     25: {"001": 20260921, "002": 20260923, "003": 20260924, "004": 20260925, "005": 20260926},
     50: {"001": 20260922, "002": 20260927, "003": 20260928, "004": 20260929, "005": 20260930},
 }
-assert regression_garch_config["cases"]["25"]["dataset_seeds"] == REGRESSION_GARCH_DATASET_SEEDS[25]
-assert regression_garch_config["cases"]["50"]["dataset_seeds"] == REGRESSION_GARCH_DATASET_SEEDS[50]
-
 EXPECTED_CANONICAL_HASHES = {
     25: "07a016de0093074e65d29f3a2a87fb5e9f4af0f38fe0f50ce10fa3e9fad295cd",
     50: "fa821d80909ca019ad41fdb3938f240df1b8e91e965bac1a05525c4186180b65",
 }
 
-def file_sha256(path):
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as source:
-        for block in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
 for p_reg in (25, 50):
-    canonical_path = Path("data") / f"regression_garch_p{p_reg}_dataset_001.npz"
-    actual_hash = file_sha256(canonical_path)
+    case = regression_garch_config["cases"][str(p_reg)]
+    assert case["total_dimension"] == p_reg + 4
+    assert case["dataset_seeds"] == REGRESSION_GARCH_DATASET_SEEDS[p_reg]
+    canonical_path = regression_garch_production.dataset_path(p_reg, "001")
+    actual_hash = regression_garch_production.sha256_file(canonical_path)
     if actual_hash != EXPECTED_CANONICAL_HASHES[p_reg]:
-        raise RuntimeError(
-            f"Canonical p={p_reg} dataset SHA-256 mismatch: {actual_hash}"
-        )
-    print(f"p={p_reg}, d={p_reg + 4}: {canonical_path}, SHA256={actual_hash}")
-    print("fixed seeds:", REGRESSION_GARCH_DATASET_SEEDS[p_reg])
-"""),
-    markdown("""### 7.2 Create or verify the five datasets per dimension
-
-This guarded cell performs data preparation only; it does not run MAP optimisation or MCMC. Leave the flag `False` when reproducing results from existing datasets. When enabled, the driver loads and verifies every existing archive, creates only missing datasets 002--005, prints filename/id/seed/SHA-256, and refuses to regenerate dataset 001 or overwrite any archive.
-"""),
-    code("""PREPARE_MISSING_REGRESSION_GARCH_DATASETS = False
-
-if PREPARE_MISSING_REGRESSION_GARCH_DATASETS:
-    subprocess.run(
-        [sys.executable, "run_regression_garch_stress_test.py", "--prepare-datasets"],
-        check=True,
-    )
-else:
-    print("Dataset preparation skipped. Set the explicit flag to True when required.")
-"""),
-    markdown("""### 7.3 Cache-aware full-data and $b=0$ subsampling MCMC
-
-The production driver processes datasets sequentially and immediately checkpoints dataset verification, MAP/Hessian, pilot MCMC, memory-mapped Taylor arrays, tuning, both production chains, timings, and posterior summaries under `regression_garch_outputs/p{p}/dataset_{id}/`. Rerunning resumes from valid dataset-hash-bound stages. Large arrays are released between datasets.
-
-The production convention is 12,000 MCMC updates, 2,000 burn-in updates, and 10,000 retained draws. Proposal multipliers are the already validated zero-jitter values: 0.20 for $p=25$ and 0.75 for $p=50$. The five runs are computational robustness/timing replicates, not coverage replicates.
-"""),
-    code("""RUN_REGRESSION_GARCH_PRODUCTION = False
-
-if RUN_REGRESSION_GARCH_PRODUCTION:
-    # The driver itself enforces sequential dataset processing and cache validation.
-    subprocess.run([sys.executable, "run_regression_garch_stress_test.py"], check=True)
-else:
+        raise RuntimeError(f"Canonical p={p_reg} dataset SHA-256 mismatch: {actual_hash}")
     print(
-        "Production inference skipped. Set RUN_REGRESSION_GARCH_PRODUCTION=True "
-        "only for the intended manual overnight run."
+        f"p={p_reg}, d={p_reg + 4}: dataset 001, "
+        f"seed={case['dataset_seeds']['001']}, path={canonical_path}, SHA256={actual_hash}"
     )
-"""),
-    markdown(r"""### 7.4 Five-dataset computational and posterior summaries
 
-Each row reports the requested timing, tuning, realized-compute, and marginal posterior-agreement diagnostics. The median and range of $R_{\mathrm{CPU}}=\mathrm{CPU}_{\mathrm{full}}/\mathrm{CPU}_{\mathrm{sub}}$ are reported separately for $p=25$ ($d=29$) and $p=50$ ($d=54$).
-"""),
-    code("""regression_garch_summary_rows = []
-missing_regression_garch_summaries = []
-for p_reg in (25, 50):
-    for dataset_id in ("001", "002", "003", "004", "005"):
-        summary_path = (
-            Path("regression_garch_outputs") / f"p{p_reg}" /
-            f"dataset_{dataset_id}" / "summary.json"
-        )
-        if summary_path.exists():
-            with summary_path.open(encoding="utf-8") as source:
-                regression_garch_summary_rows.append(json.load(source))
-        else:
-            missing_regression_garch_summaries.append(str(summary_path))
+mcmc = regression_garch_config["mcmc"]
+assert (mcmc["iterations"], mcmc["burn_in"], mcmc["retained_draws"]) == (12000, 2000, 10000)
+assert (mcmc["R_max"], mcmc["t_star"], mcmc["b"]) == (100, 1000, 0.0)
+assert regression_garch_config["cases"]["25"]["proposal_covariance_multiplier"] == 0.20
+assert regression_garch_config["cases"]["50"]["proposal_covariance_multiplier"] == 0.75
+print("Validated production settings: N=12000, burn-in=2000, R_max=100, t_star=1000, b=0.")
 
-if missing_regression_garch_summaries:
-    print("Regression-GARCH production summaries are not yet complete:")
-    for missing_path in missing_regression_garch_summaries:
-        print(" -", missing_path)
+def load_dimension_summaries(p_reg):
+    rows = []
+    for dataset_id in REGRESSION_GARCH_DATASET_IDS:
+        summary_path = regression_garch_production.output_directory(p_reg, dataset_id) / "summary.json"
+        if not summary_path.exists():
+            raise FileNotFoundError(f"Production summary is not complete: {summary_path}")
+        with summary_path.open(encoding="utf-8") as source:
+            rows.append(json.load(source))
+    return pd.DataFrame(rows).sort_values("dataset_id").reset_index(drop=True)
 
-if regression_garch_summary_rows:
-    regression_garch_summary = pd.DataFrame(regression_garch_summary_rows).sort_values(["p", "dataset_id"])
-    display(regression_garch_summary[[
+def display_dimension_summary(p_reg):
+    results = load_dimension_summaries(p_reg)
+    aggregate = regression_garch_production.aggregate_dimension(p_reg, regression_garch_config)
+    K_stress = regression_garch_dcbats_export.select_k_stress(aggregate["median_R_CPU"])
+    display(results[[
         "p", "total_parameter_dimension", "dataset_id", "seed",
         "full_data_acceptance_rate", "subsampling_acceptance_rate",
         "full_data_CPU_seconds", "subsampling_CPU_seconds", "R_CPU",
         "tuned_c", "tuned_gamma", "tuned_m", "expected_u_max",
         "expected_u_max_over_T", "realised_average_u_max",
-        "marginal_95_intervals_overlapping", "marginal_95_intervals_total",
         "marginal_95_intervals_overlap_proportion",
         "maximum_standardised_posterior_mean_difference",
         "median_standardised_posterior_mean_difference",
         "minimum_posterior_SD_ratio", "maximum_posterior_SD_ratio",
     ]])
+    display(pd.DataFrame([{
+        "p": p_reg, "d": p_reg + 4,
+        "R_CPU_values": aggregate["R_CPU_values"],
+        "median_R_CPU": aggregate["median_R_CPU"],
+        "minimum_R_CPU": aggregate["range_R_CPU"][0],
+        "maximum_R_CPU": aggregate["range_R_CPU"][1],
+        "K_stress": K_stress,
+    }]))
+    return results, aggregate, K_stress
+"""),
+    markdown("""### 7.2 Create or verify the five datasets per dimension
 
-    speed_summary = (
-        regression_garch_summary.groupby(["p", "total_parameter_dimension"])["R_CPU"]
-        .agg(R_CPU_values=lambda values: list(values), median_R_CPU="median", min_R_CPU="min", max_R_CPU="max")
-        .reset_index()
+Executing the next cell verifies every existing dataset and creates only missing datasets 002--005 with their fixed seeds. Dataset 001 is immutable and is never regenerated. Existing files are validated rather than overwritten, and each dataset's id, seed, path, and SHA-256 are printed.
+"""),
+    code("""regression_garch_production.prepare_datasets(
+    regression_garch_config, p_values=(25, 50)
+)
+print("All ten regression-GARCH datasets are present and validated.")
+"""),
+    markdown("""### 7.3 Production inference for $p=25$ ($d=29$)
+
+Executing this cell processes datasets 001--005 sequentially. Every expensive stage is dataset-hash-bound and cache-aware, so rerunning the cell resumes from completed checkpoints.
+"""),
+    code("""for dataset_id in REGRESSION_GARCH_DATASET_IDS:
+    print(f"\\n===== p=25, d=29, dataset {dataset_id} =====", flush=True)
+    regression_garch_production.run_dataset(
+        25, dataset_id, regression_garch_config
     )
-    speed_summary["K_stress"] = np.floor(speed_summary["median_R_CPU"] + 0.5).astype(int)
-    display(speed_summary)
+    gc.collect()
+print("Completed production inference for all five p=25 datasets.")
+"""),
+    markdown(r"""### 7.4 $p=25$ summaries and computational ratio
+
+This cell saves and displays all five $R_{\mathrm{CPU}}$ values, their median and range, and the resulting ordinary-nearest-integer $K_{\mathrm{stress}}$.
+"""),
+    code("""p25_results, p25_cpu_summary, p25_K_stress = display_dimension_summary(25)
+"""),
+    markdown("""### 7.5 Production inference for $p=50$ ($d=54$)
+
+Executing this cell processes datasets 001--005 sequentially with the same restart-safe workflow. Large per-dataset objects are released before the next dataset starts.
+"""),
+    code("""for dataset_id in REGRESSION_GARCH_DATASET_IDS:
+    print(f"\\n===== p=50, d=54, dataset {dataset_id} =====", flush=True)
+    regression_garch_production.run_dataset(
+        50, dataset_id, regression_garch_config
+    )
+    gc.collect()
+print("Completed production inference for all five p=50 datasets.")
+"""),
+    markdown(r"""### 7.6 $p=50$ summaries and computational ratio
+
+This cell saves and displays all five $R_{\mathrm{CPU}}$ values, their median and range, and the resulting ordinary-nearest-integer $K_{\mathrm{stress}}$.
+"""),
+    code("""p50_results, p50_cpu_summary, p50_K_stress = display_dimension_summary(50)
+
+regression_garch_summary = pd.concat([p25_results, p50_results], ignore_index=True)
+speed_summary = pd.DataFrame([
+    {"p": 25, "d": 29, **p25_cpu_summary, "K_stress": p25_K_stress},
+    {"p": 50, "d": 54, **p50_cpu_summary, "K_stress": p50_K_stress},
+])
+display(speed_summary[["p", "d", "R_CPU_values", "median_R_CPU", "range_R_CPU", "K_stress"]])
+"""),
+    markdown("""### 7.7 Dataset-001 Python posterior diagnostics
+
+Dataset 001 was predesignated for detailed full-data versus $b=0$ subsampling comparison for each dimension.
 """),
     code("""# Dataset 001 was predesignated for detailed marginal diagnostics.
 for p_reg in (25, 50):
@@ -172,7 +192,7 @@ for p_reg in (25, 50):
     else:
         print(f"Detailed p={p_reg}, d={p_reg + 4} dataset-001 plot is not yet available: {overlay_path}")
 """),
-    markdown(r"""### 7.5 Deterministic DC-BATS resource matching and R export
+    markdown(r"""### 7.8 Deterministic DC-BATS resource matching and R export
 
 Only after all five Python summaries exist, the exporter computes the median $R_{\mathrm{CPU}}$ separately by dimension and defines $K_{\mathrm{stress}}$ by ordinary nearest-integer rounding of that median. For positive speed-ups this is implemented as $\lfloor\operatorname{median}(R_{\mathrm{CPU}})+0.5\rfloor$. The value of $T$ plays no role in selecting or rounding $K_{\mathrm{stress}}$.
 
@@ -180,18 +200,22 @@ For each dimension, DC-BATS is prepared on canonical dataset 001 only for the th
 
 The export contains the exact canonical dataset-001 observations and presample values, its original NPZ SHA-256, Python MAP initial values, and the 10,000 retained full-data and subsampling draws. It never resimulates data.
 """),
-    code("""EXPORT_REGRESSION_GARCH_FOR_DC_BATS = False
+    code("""# Prepare canonical dataset-001 exports and deterministic K configurations.
+# This cell does not run R or Stan sampling.
+regression_garch_production.require_writable_output_root()
+for p_reg in (25, 50):
+    print(f"Preparing DC-BATS inputs for p={p_reg}, d={p_reg + 4}, canonical dataset 001.")
+    export_directory = regression_garch_dcbats_export.export_data(
+        p_reg, regression_garch_config
+    )
+    regression_garch_dcbats_export.export_draws(p_reg, export_directory)
 
-if EXPORT_REGRESSION_GARCH_FOR_DC_BATS:
-    subprocess.run(
-        [sys.executable, "export_regression_garch_dcbats.py", "--include-python-results"],
-        check=True,
-    )
-else:
-    print(
-        "R export/resource selection skipped. Enable only after both five-dataset "
-        "Python summaries are complete."
-    )
+regression_garch_dc_resource_rows = regression_garch_dcbats_export.write_resource_configuration(
+    regression_garch_config
+)
+regression_garch_dc_resources = pd.DataFrame(regression_garch_dc_resource_rows)
+display(regression_garch_dc_resources)
+print("Python export complete. DC-BATS R sampling remains a separate manual step.")
 """),
     code("""resource_config_path = Path("regression_garch_outputs") / "dcbats_resource_config.csv"
 if resource_config_path.exists():
@@ -208,7 +232,7 @@ else:
         "to run until five-dataset median R_CPU values have been exported."
     )
 """),
-    markdown(r"""### 7.6 Regression-GARCH Student-$t$ DC-BATS comparison on canonical dataset 001
+    markdown(r"""### 7.9 Regression-GARCH Student-$t$ DC-BATS comparison on canonical dataset 001
 
 The separate R implementation is `run_regression_garch_dc_bats.R` with Stan model `regression_garch_student_t.stan`. For each contiguous shard of size $n_k$, it multiplies the likelihood by $T/n_k$ and includes the matching prior once. When $K$ divides $T$, this power is exactly $K$. All regression residuals, including the preceding residual at a shard boundary, are recomputed using the current draw of the full $p$-vector of regression coefficients. As in the preserved Section-6 simulation design, the preceding true simulated conditional variance is used as an explicitly recorded oracle boundary value.
 
