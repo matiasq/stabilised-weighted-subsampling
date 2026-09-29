@@ -340,6 +340,13 @@ def gradient_log_posterior_phi(phi, model):
     ) + np.asarray(model["grad_log_prior_phi"](phi), dtype=float)
 
 
+def map_psi_bounds(p_reg):
+    """Numerical regularity bounds used by both MAP optimisers."""
+    return [(-20.0, 20.0)] * p_reg + [
+        (-20.0, 5.0), (-20.0, 20.0), (-20.0, 20.0), (-10.0, 10.0)
+    ]
+
+
 def initial_map_optimisation(model, theta_start):
     theta_to_psi, psi_to_theta = persistence_maps(model, np)
     psi_start = np.asarray(theta_to_psi(theta_start), dtype=float)
@@ -366,9 +373,7 @@ def initial_map_optimisation(model, theta_start):
         )
         return -gradient_psi
 
-    bounds = [(-20.0, 20.0)] * p_reg + [
-        (-20.0, 5.0), (-20.0, 20.0), (-20.0, 20.0), (-10.0, 10.0)
-    ]
+    bounds = map_psi_bounds(p_reg)
     started = time.perf_counter()
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
@@ -417,57 +422,328 @@ def refine_map(model, theta_start, maximum_steps=6):
 
     jacobian_phi = autograd_jacobian(phi_from_psi)
     Hessian_phi_transform = autograd_jacobian(jacobian_phi)
+
+    def evaluate_derivatives(candidate_psi):
+        candidate_psi = np.asarray(candidate_psi, dtype=float)
+        phi = np.asarray(phi_from_psi(candidate_psi), dtype=float)
+        objective, gradient_phi, Hessian_phi = posterior_phi_derivatives(phi, model)
+        J = np.asarray(jacobian_phi(candidate_psi), dtype=float)
+        transform_Hessians = np.asarray(
+            Hessian_phi_transform(candidate_psi), dtype=float
+        )
+        gradient_psi = J.T @ gradient_phi
+        Hessian_psi = J.T @ Hessian_phi @ J + np.tensordot(
+            gradient_phi, transform_Hessians, axes=(0, 0)
+        )
+        Hessian_psi = 0.5 * (Hessian_psi + Hessian_psi.T)
+        return {
+            "psi": candidate_psi,
+            "theta": np.asarray(psi_to_theta(candidate_psi), dtype=float),
+            "phi": phi,
+            "objective": float(objective),
+            "gradient_phi": np.asarray(gradient_phi, dtype=float),
+            "gradient_psi": np.asarray(gradient_psi, dtype=float),
+            "Hessian_phi": np.asarray(Hessian_phi, dtype=float),
+            "Hessian_psi": np.asarray(Hessian_psi, dtype=float),
+        }
+
+    def negative_objective(candidate_psi):
+        candidate_psi = np.asarray(candidate_psi, dtype=float)
+        if not np.all(np.isfinite(candidate_psi)):
+            return np.inf
+        candidate_phi = np.asarray(phi_from_psi(candidate_psi), dtype=float)
+        if not np.all(np.isfinite(candidate_phi)):
+            return np.inf
+        value, outside = model["log_posterior"](candidate_phi)
+        return np.inf if outside or not np.isfinite(value) else -float(value)
+
+    def negative_objective_gradient(candidate_psi):
+        candidate_psi = np.asarray(candidate_psi, dtype=float)
+        candidate_phi = np.asarray(phi_from_psi(candidate_psi), dtype=float)
+        gradient_phi = gradient_log_posterior_phi(candidate_phi, model)
+        J = np.asarray(jacobian_phi(candidate_psi), dtype=float)
+        return -(J.T @ gradient_phi)
+
+    def gradient_tolerances_satisfied(state):
+        return bool(
+            np.max(np.abs(state["gradient_psi"])) <= 1e-4
+            and np.max(np.abs(state["gradient_phi"])) <= 1e-3
+        )
+
+    def precision_limited_stationarity(state):
+        """Conservative quantitative test for a machine-precision plateau."""
+        negative_Hessian = -state["Hessian_psi"]
+        minimum_eigenvalue = float(np.min(np.linalg.eigvalsh(negative_Hessian)))
+        predicted_gain = np.inf
+        if minimum_eigenvalue > 0.0:
+            try:
+                newton_direction = np.linalg.solve(
+                    negative_Hessian, state["gradient_psi"]
+                )
+                predicted_gain = float(
+                    0.5 * state["gradient_psi"] @ newton_direction
+                )
+            except np.linalg.LinAlgError:
+                predicted_gain = np.inf
+        objective_resolution = float(
+            1024.0
+            * np.finfo(float).eps
+            * max(1.0, abs(state["objective"]))
+        )
+        close_gradient = (
+            np.max(np.abs(state["gradient_psi"])) <= 1e-3
+            and np.max(np.abs(state["gradient_phi"])) <= 1e-2
+        )
+        return {
+            "passed": bool(
+                close_gradient
+                and np.isfinite(predicted_gain)
+                and predicted_gain >= 0.0
+                and predicted_gain <= objective_resolution
+            ),
+            "negative_Hessian_minimum_eigenvalue_psi": minimum_eigenvalue,
+            "predicted_objective_gain": predicted_gain,
+            "objective_resolution": objective_resolution,
+        }
+
     psi = np.asarray(theta_to_psi(theta_start), dtype=float)
     history = []
     started = time.perf_counter()
+    state = evaluate_derivatives(psi)
+    refinement_starting_objective = state["objective"]
+    newton_stop_reason = None
+    ordinary_newton_succeeded = False
+    newton_iterations = 0
+    newton_steps_accepted = 0
+
     for iteration in range(maximum_steps + 1):
-        phi = np.asarray(phi_from_psi(psi), dtype=float)
-        objective, gradient_phi, Hessian_phi = posterior_phi_derivatives(phi, model)
-        J = np.asarray(jacobian_phi(psi), dtype=float)
-        transform_Hessians = np.asarray(Hessian_phi_transform(psi), dtype=float)
-        gradient_psi = J.T @ gradient_phi
-        Hessian_psi = J.T @ Hessian_phi @ J + np.tensordot(gradient_phi, transform_Hessians, axes=(0, 0))
-        Hessian_psi = 0.5 * (Hessian_psi + Hessian_psi.T)
         record = {
-            "iteration": iteration, "objective": objective,
-            "gradient_infinity_norm_phi": float(np.max(np.abs(gradient_phi))),
-            "gradient_infinity_norm_psi": float(np.max(np.abs(gradient_psi))),
+            "iteration": iteration, "objective": state["objective"],
+            "gradient_infinity_norm_phi": float(
+                np.max(np.abs(state["gradient_phi"]))
+            ),
+            "gradient_infinity_norm_psi": float(
+                np.max(np.abs(state["gradient_psi"]))
+            ),
         }
         history.append(record)
-        if record["gradient_infinity_norm_psi"] <= 1e-4 and record["gradient_infinity_norm_phi"] <= 1e-3:
+        progress(
+            f"MAP Newton iteration {iteration}: "
+            f"objective={state['objective']:.12g}, "
+            f"|g_psi|_inf={record['gradient_infinity_norm_psi']:.3e}, "
+            f"|g_phi|_inf={record['gradient_infinity_norm_phi']:.3e}"
+        )
+        if gradient_tolerances_satisfied(state):
             termination = "gradient tolerances satisfied"
+            newton_stop_reason = termination
+            ordinary_newton_succeeded = True
             break
         if iteration == maximum_steps:
-            raise RuntimeError("MAP refinement did not reach validated gradient tolerances.")
-        negative_Hessian = -Hessian_psi
+            newton_stop_reason = "maximum Newton steps reached"
+            break
+
+        newton_iterations += 1
+        negative_Hessian = -state["Hessian_psi"]
         minimum_eigenvalue = float(np.min(np.linalg.eigvalsh(negative_Hessian)))
         if minimum_eigenvalue <= 1e-10:
             negative_Hessian = model["ns"]["make_pos_def"](negative_Hessian, eps=1e-8)
             record["negative_Hessian_repaired"] = True
         else:
             record["negative_Hessian_repaired"] = False
-        direction = np.linalg.solve(negative_Hessian, gradient_psi)
-        directional_derivative = float(gradient_psi @ direction)
+        record["negative_Hessian_minimum_eigenvalue"] = minimum_eigenvalue
+        direction = np.linalg.solve(negative_Hessian, state["gradient_psi"])
+        directional_derivative = float(state["gradient_psi"] @ direction)
+        record["directional_derivative"] = directional_derivative
         if directional_derivative <= 0:
-            raise RuntimeError("Newton direction is not an ascent direction.")
+            newton_stop_reason = "Newton direction was not an ascent direction"
+            break
+        line_search_objective, outside = model["log_posterior"](state["phi"])
+        if outside or not np.isfinite(line_search_objective):
+            newton_stop_reason = (
+                "aggregate log posterior was invalid at the Newton point"
+            )
+            break
+        line_search_objective = float(line_search_objective)
+        record["line_search_objective"] = line_search_objective
+        record["objective_evaluation_difference"] = float(
+            line_search_objective - state["objective"]
+        )
         step_size = 1.0
         for backtrack in range(25):
             candidate = psi + step_size * direction
-            candidate_value, outside = model["log_posterior"](np.asarray(phi_from_psi(candidate), dtype=float))
-            if not outside and np.isfinite(candidate_value) and candidate_value >= objective + 1e-4 * step_size * directional_derivative:
+            candidate_phi = np.asarray(phi_from_psi(candidate), dtype=float)
+            candidate_value, outside = model["log_posterior"](candidate_phi)
+            sufficient_ascent = (
+                line_search_objective
+                + 1e-4 * step_size * directional_derivative
+            )
+            if (
+                not outside
+                and np.isfinite(candidate_value)
+                and candidate_value >= sufficient_ascent
+            ):
                 break
             step_size *= 0.5
         else:
-            raise RuntimeError("Newton refinement could not find an ascent step.")
+            record.update({"step_size": step_size, "backtracks": 25})
+            newton_stop_reason = (
+                "Newton Armijo line search exhausted 25 backtracking steps"
+            )
+            break
         record.update({"step_size": step_size, "backtracks": backtrack})
         psi = candidate
+        newton_steps_accepted += 1
+        state = evaluate_derivatives(psi)
+
+    fallback_used = not ordinary_newton_succeeded
+    fallback_optimizer = None
+    fallback_status = None
+    fallback_message = None
+    fallback_success = None
+    fallback_iterations = None
+    fallback_function_evaluations = None
+    fallback_starting_objective = None
+    fallback_objective_improvement = None
+
+    if fallback_used:
+        fallback_optimizer = "L-BFGS-B"
+        fallback_starting_objective = -negative_objective(psi)
+        if not np.isfinite(fallback_starting_objective):
+            raise RuntimeError(
+                "MAP fallback starting point has a non-finite objective after "
+                f"Newton stopped: {newton_stop_reason}."
+            )
+        progress(
+            "MAP Newton refinement stopped ("
+            f"{newton_stop_reason}); starting L-BFGS-B fallback from the current "
+            "best Newton point"
+        )
+        try:
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                fallback = minimize(
+                    negative_objective,
+                    psi,
+                    jac=negative_objective_gradient,
+                    method=fallback_optimizer,
+                    bounds=map_psi_bounds(model["p_reg"]),
+                    options={
+                        "maxiter": 300,
+                        "gtol": 1e-7,
+                        "ftol": 1e-15,
+                        "maxls": 50,
+                    },
+                )
+        except Exception as exc:
+            raise RuntimeError(
+                "MAP L-BFGS-B fallback failed after Newton stopped: "
+                f"{newton_stop_reason}."
+            ) from exc
+        fallback_status = int(fallback.status)
+        fallback_message = str(fallback.message)
+        fallback_success = bool(fallback.success)
+        fallback_iterations = int(fallback.nit)
+        fallback_function_evaluations = int(fallback.nfev)
+        if caught:
+            fallback_message += "; warnings: " + "; ".join(
+                str(item.message) for item in caught
+            )
+        psi = np.asarray(fallback.x, dtype=float)
+        if not np.all(np.isfinite(psi)):
+            raise RuntimeError(
+                "MAP fallback returned non-finite optimisation parameters: "
+                f"status={fallback_status}, message={fallback_message}"
+            )
+        try:
+            state = evaluate_derivatives(psi)
+        except Exception as exc:
+            raise RuntimeError(
+                "MAP fallback final gradient/Hessian evaluation failed: "
+                f"status={fallback_status}, message={fallback_message}"
+            ) from exc
+        fallback_final_objective = -negative_objective(psi)
+        comparison_tolerance = float(
+            128.0
+            * np.finfo(float).eps
+            * max(1.0, abs(fallback_starting_objective))
+        )
+        fallback_objective_improvement = float(
+            fallback_final_objective - fallback_starting_objective
+        )
+        if (
+            not np.isfinite(fallback_final_objective)
+            or fallback_objective_improvement < -comparison_tolerance
+        ):
+            raise RuntimeError(
+                "MAP fallback worsened the exact log posterior beyond numerical "
+                f"tolerance ({fallback_objective_improvement:.3e} < "
+                f"{-comparison_tolerance:.3e}); status={fallback_status}, "
+                f"message={fallback_message}"
+            )
+
+    finite_state = all(
+        np.all(np.isfinite(state[name]))
+        for name in (
+            "psi", "theta", "phi", "gradient_phi", "gradient_psi",
+            "Hessian_phi", "Hessian_psi",
+        )
+    ) and np.isfinite(state["objective"])
+    strict_stationarity = gradient_tolerances_satisfied(state)
+    precision_diagnostics = precision_limited_stationarity(state)
+    final_map_validation_passed = bool(
+        finite_state
+        and (strict_stationarity or precision_diagnostics["passed"])
+    )
+    if not final_map_validation_passed:
+        raise RuntimeError(
+            "MAP refinement and fallback did not produce a validated stationary "
+            "point: "
+            f"finite_state={finite_state}, "
+            f"|g_psi|_inf={np.max(np.abs(state['gradient_psi'])):.3e}, "
+            f"|g_phi|_inf={np.max(np.abs(state['gradient_phi'])):.3e}, "
+            f"predicted_gain={precision_diagnostics['predicted_objective_gain']:.3e}, "
+            f"fallback_status={fallback_status}, message={fallback_message}"
+        )
+
+    if fallback_used:
+        if strict_stationarity:
+            termination = "fallback gradient tolerances satisfied"
+        else:
+            termination = "fallback precision-limited stationarity satisfied"
+
+    report = {
+        "ordinary_newton_refinement_succeeded": ordinary_newton_succeeded,
+        "fallback_optimisation_used": fallback_used,
+        "newton_stop_reason": newton_stop_reason,
+        "refinement_starting_objective": refinement_starting_objective,
+        "final_objective": state["objective"],
+        "final_gradient_norm": float(np.linalg.norm(state["gradient_phi"])),
+        "final_gradient_infinity_norm_phi": float(
+            np.max(np.abs(state["gradient_phi"]))
+        ),
+        "final_gradient_infinity_norm_psi": float(
+            np.max(np.abs(state["gradient_psi"]))
+        ),
+        "newton_iterations": newton_iterations,
+        "newton_steps_accepted": newton_steps_accepted,
+        "fallback_optimizer": fallback_optimizer,
+        "fallback_termination_status": fallback_status,
+        "fallback_termination_message": fallback_message,
+        "fallback_optimizer_reported_success": fallback_success,
+        "fallback_iterations": fallback_iterations,
+        "fallback_function_evaluations": fallback_function_evaluations,
+        "fallback_starting_objective": fallback_starting_objective,
+        "fallback_objective_improvement": fallback_objective_improvement,
+        "strict_gradient_tolerances_satisfied": strict_stationarity,
+        "precision_limited_stationarity": precision_diagnostics,
+        "final_map_validation_passed": final_map_validation_passed,
+    }
     return {
-        "theta": np.asarray(psi_to_theta(psi), dtype=float),
-        "phi": np.asarray(phi_from_psi(psi), dtype=float), "psi": psi,
-        "objective": objective, "gradient_phi": gradient_phi, "gradient_psi": gradient_psi,
-        "Hessian_phi": Hessian_phi, "Hessian_psi": Hessian_psi,
-        "termination": termination, "history": history,
+        **state,
+        "termination": termination,
+        "history": history,
         "seconds": time.perf_counter() - started,
+        "report": report,
     }
 
 
@@ -518,6 +794,7 @@ def obtain_map(model, dataset, checksum, p_reg, dataset_id, out):
         "dataset_sha256": checksum, "initial_seconds": initial["seconds"],
         "initial_iterations": initial["iterations"], "refinement_seconds": refined["seconds"],
         "termination": refined["termination"], "history": refined["history"],
+        **refined["report"],
     })
     return load_npz_if_matching(checkpoint, checksum, ("theta", "phi", "Hessian_phi"))
 
