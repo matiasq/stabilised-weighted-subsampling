@@ -2,7 +2,7 @@
 # Restart-safe DC-BATS extension for regression-GARCH(1,1), Student-t errors.
 #
 # This is deliberately separate from run_dc_bats_runs.R.  It uses canonical
-# dataset 001 exported by export_regression_garch_dcbats.py and refuses to run
+# dataset 001 exported by Section 7 of the main notebook and refuses to run
 # until the five-dataset Python median R_CPU has deterministically selected K.
 # No data are simulated in R.
 # ------------------------------------------------------------------------------
@@ -148,8 +148,8 @@ bary_M <- 10000L
 resource_file <- file.path("regression_garch_outputs", "dcbats_resource_config.csv")
 if (!file.exists(resource_file)) {
   stop(
-    "DC-BATS resource configuration is absent. Complete all five Python datasets and run ",
-    "export_regression_garch_dcbats.py --include-python-results first."
+    "DC-BATS resource configuration is absent. Complete all five Python datasets and ",
+    "run the DC-BATS export cells in Section 7 of the main notebook first."
   )
 }
 resource_all <- fread(resource_file)
