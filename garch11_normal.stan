@@ -2,7 +2,7 @@ data {
   int<lower=1> T;
   vector[T] y;
 
-  // DC-BATS likelihood power. Use power = K for each chunk.
+  // DC-BATS likelihood power. Shard k uses power = T_total / n_k.
   real<lower=0> power;
 
   // Known recursion initialisation, matching our likelihood code.

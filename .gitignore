@@ -4,3 +4,13 @@ regression_garch_outputs/
 
 # Notebook-generated numerical caches, logs, figures, and external-method result copies.
 /results/
+
+# Local Python/Jupyter caches and run logs.
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+/dcbats_nohup.log
+/dcbats_overnight_logs/
+
+# CmdStan executable generated from regression_garch_student_t.stan.
+/regression_garch_student_t

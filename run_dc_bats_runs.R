@@ -13,7 +13,8 @@
 # The results produced by this script are read by the main code
 # stabilised_weighted_data_subsampling.ipynb to generate the figures in the paper.
 #
-# The code should be run for K = 10, 20, 80 separately.
+# The code is run separately for each requested K.  The current comparison uses
+# K = 10, 20, and 76; the preserved historical K = 80 outputs remain valid.
 #
 # Authors:
 # - Zixuan Wang
@@ -36,7 +37,15 @@ library(ggplot2)
 # Run settings
 # ------------------------------------------------------------------------------
 
-K <- 10   # We run this for 10, 20, 80. Results are saved for each K
+args <- commandArgs(trailingOnly = TRUE)
+K_arg <- grep("^--K=", args, value = TRUE)
+if (length(args) != 1L || length(K_arg) != 1L) {
+  stop("Usage: Rscript run_dc_bats_runs.R --K=<positive integer>")
+}
+K <- suppressWarnings(as.integer(sub("^--K=", "", K_arg)))
+if (is.na(K) || K < 1L) {
+  stop("--K must be a positive integer.")
+}
 
 n_chains <- 4
 n_warmup <- 5000
@@ -44,6 +53,9 @@ n_sampling <- 5000
 bary_M <- 10000 # Matches our 10 K post burn-in iteration
 
 results_dir <- file.path("results", "DC_BATS", paste0("K_", K))
+if (dir.exists(results_dir) && length(list.files(results_dir, all.files = TRUE, no.. = TRUE)) > 0L) {
+  stop("Refusing to overwrite existing DC-BATS output directory: ", results_dir)
+}
 dir.create(results_dir, showWarnings = FALSE, recursive = TRUE)
 
 # ------------------------------------------------------------------------------
@@ -77,7 +89,7 @@ sigma2_start_global <- as.numeric(init_dt$sigma2_start[1])
 
 fit_chunk <- function(
     y_chunk,
-    K,
+    likelihood_power,
     y_start,
     sigma2_start,
     MAP,
@@ -89,7 +101,7 @@ fit_chunk <- function(
   data_list <- list(
     T = length(y_chunk),
     y = as.numeric(y_chunk),
-    power = K,
+    power = likelihood_power,
     y_start = y_start,
     sigma2_start = sigma2_start
   )
@@ -180,21 +192,38 @@ stopifnot(length(Y) == length(sigma2_true))
 T_full <- length(Y)
 
 # ------------------------------------------------------------------------------
-# Split into contiguous chunks with correct boundary values
+# Split into contiguous chunks with correct boundary values.  Shards 1,...,K-1
+# use floor(T/K) observations and the final shard receives the full remainder.
 # ------------------------------------------------------------------------------
 
 n_chunk <- T_full %/% K
-T_used <- n_chunk * K
-
-if (T_used < T_full) {
-  message("Dropping the last ", T_full - T_used, " observations so chunks have equal size.")
-  Y <- Y[seq_len(T_used)]
-  sigma2_true <- sigma2_true[seq_len(T_used)]
+if (n_chunk < 1L) {
+  stop("K cannot exceed the number of observations.")
 }
+shard_sizes <- rep(n_chunk, K)
+shard_sizes[K] <- T_full - n_chunk * (K - 1L)
+shard_end_indices <- cumsum(shard_sizes)
+shard_start_indices <- c(1L, head(shard_end_indices, -1L) + 1L)
+shard_likelihood_powers <- T_full / shard_sizes
+T_used <- sum(shard_sizes)
+
+stopifnot(
+  T_used == T_full,
+  shard_start_indices[1] == 1L,
+  tail(shard_end_indices, 1L) == T_full,
+  all(shard_start_indices[-1L] == shard_end_indices[-K] + 1L)
+)
+
+cat("Shard sizes:", paste(shard_sizes, collapse = ", "), "\n")
+cat(
+  "Shard likelihood powers T/n_k:",
+  paste(format(shard_likelihood_powers, digits = 16), collapse = ", "),
+  "\n"
+)
 
 chunks <- lapply(seq_len(K), function(k) {
-  start_idx <- (k - 1) * n_chunk + 1
-  end_idx <- k * n_chunk
+  start_idx <- shard_start_indices[k]
+  end_idx <- shard_end_indices[k]
   
   if (k == 1) {
     y_start_k <- y_start_global
@@ -209,6 +238,7 @@ chunks <- lapply(seq_len(K), function(k) {
     sigma2 = sigma2_true[start_idx:end_idx],
     y_start = y_start_k,
     sigma2_start = sigma2_start_k,
+    likelihood_power = shard_likelihood_powers[k],
     start_idx = start_idx,
     end_idx = end_idx
   )
@@ -233,13 +263,14 @@ chunk_fits <- lapply(seq_along(chunks), function(k) {
   cat("Indices:", chunks[[k]]$start_idx, "to", chunks[[k]]$end_idx, "\n")
   cat("y_start:", chunks[[k]]$y_start, "\n")
   cat("sigma2_start:", chunks[[k]]$sigma2_start, "\n")
+  cat("likelihood power:", chunks[[k]]$likelihood_power, "\n")
   flush.console()
   
   t0 <- proc.time()
   
   fit_k <- fit_chunk(
     y_chunk = chunks[[k]]$y,
-    K = K,
+    likelihood_power = chunks[[k]]$likelihood_power,
     y_start = chunks[[k]]$y_start,
     sigma2_start = chunks[[k]]$sigma2_start,
     MAP = MAP,
@@ -369,6 +400,8 @@ timing_dt <- data.table(
   K = K,
   n_chunk = n_chunk,
   T_used = T_used,
+  min_chunk_size = min(shard_sizes),
+  max_chunk_size = max(shard_sizes),
   n_chains = n_chains,
   n_warmup = n_warmup,
   n_sampling = n_sampling,
@@ -391,7 +424,9 @@ chunk_timing_dt <- data.table(
   chunk = seq_along(chunk_times),
   elapsed = chunk_times,
   start_idx = vapply(chunks, function(x) as.integer(x$start_idx), integer(1)),
-  end_idx = vapply(chunks, function(x) as.integer(x$end_idx), integer(1))
+  end_idx = vapply(chunks, function(x) as.integer(x$end_idx), integer(1)),
+  n_k = shard_sizes,
+  likelihood_power = shard_likelihood_powers
 )
 
 # ------------------------------------------------------------------------------
@@ -473,6 +508,8 @@ saveRDS(
     K = K,
     n_chunk = n_chunk,
     T_used = T_used,
+    shard_sizes = shard_sizes,
+    shard_likelihood_powers = shard_likelihood_powers,
     n_chains = n_chains,
     n_warmup = n_warmup,
     n_sampling = n_sampling,
@@ -485,7 +522,8 @@ saveRDS(
         start_idx = x$start_idx,
         end_idx = x$end_idx,
         y_start = x$y_start,
-        sigma2_start = x$sigma2_start
+        sigma2_start = x$sigma2_start,
+        likelihood_power = x$likelihood_power
       )
     }),
     hmc_diagnostics = hmc_diag_dt,
